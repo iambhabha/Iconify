@@ -4,6 +4,19 @@
 
 - Full Changelog can be found on the Website [here](https://kyutefox.com/changelog/iconify-browser-extension). 
 
+### July 04, 2026 - 1.0.9 (Fix)
+> - Fixes:
+
+    - Fixed IconScout downloads not working after their site update ( Lottie / SVG / 3D )
+    - Icon type is now detected from the product URL, so downloads keep working when IconScout changes page markup
+    - User token (uuid) is now located automatically, fixing "missing uuid" download failures
+    - Download buttons no longer get stuck on the loading spinner when a request fails
+    - Added proper error handling on every site ( Flaticon, IconScout, Icons8, FontAwesome )
+
+> - New:
+
+    - Built-in diagnostics: run `Iconify.debug(true)` for detailed logs and `Iconify.diagnose()` to inspect the current page
+
 ### July 01, 2025 - 1.0.8 (Update)
 > - Update:
 
