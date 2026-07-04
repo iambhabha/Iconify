@@ -1,0 +1,9 @@
+{
+  "name": "iconify",
+  "version": "1.0.9",
+  "private": true,
+  "description": "Browser extension to download quality SVG icons from Flaticon, Icons8, FontAwesome and IconScout.",
+  "scripts": {
+    "test": "node tests/run-tests.js"
+  }
+}
