@@ -18,6 +18,7 @@
         "https://fontawesome.com/*"
       ],
       "js": [
+        "./scripts/iconify-logger.js",
         "./scripts/iconify-jquery.js",
         "./scripts/iconify-assets.js",
         "./scripts/iconify-snackbar.js",

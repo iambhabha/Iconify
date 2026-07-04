@@ -82,16 +82,29 @@ const downloadIcon = function (text = "", downloadAbleName = "", extension = "sv
 }
 
 async function downloadPNG(imageSrc,name) {
-    const image = await fetch(imageSrc)
-    const imageBlog = await image.blob()
-    const imageURL = URL.createObjectURL(imageBlog)
+    try
+    {
+        const image = await fetch(imageSrc, { credentials: "include" })
+        if(!image.ok)
+        {
+            throw new Error("HTTP " + image.status + " while fetching image");
+        }
+        const imageBlog = await image.blob()
+        const imageURL = URL.createObjectURL(imageBlog)
 
-    const link = document.createElement('a')
-    link.href = imageURL
-    link.download = name;
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
+        const link = document.createElement('a')
+        link.href = imageURL
+        link.download = name;
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
+        URL.revokeObjectURL(imageURL)
+    }
+    catch(e)
+    {
+        Iconify.log.error("image blob download failed for " + name, e);
+        throw e;
+    }
 }
 
 // Create  download json
@@ -121,18 +134,124 @@ const copyToClipBoard = function (text, clickedButtonElement, replacer)
 }
 
 //GET UUID
+// Resilient: IconScout has moved / renamed the key that holds the user uuid over
+// time, so instead of relying on one hard-coded path we (1) try the known key,
+// then (2) scan every localStorage entry for a uuid-shaped value, then (3) fall
+// back to cookies. Result is cached for the page lifetime.
+let _iconScoutUuidCache = null;
+const UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i;
+
 const getUUIDFroIconScout = function ()
 {
-    const se = localStorage.getItem("__user_traits");
-    if (se)
+    if (_iconScoutUuidCache) { return _iconScoutUuidCache; }
+
+    // 1) Known location (older IconScout builds).
+    try
     {
-        const userData = JSON.parse(se);
-        if (userData && userData.uuid)
+        const se = localStorage.getItem("__user_traits");
+        if (se)
         {
-            return userData.uuid;
+            const userData = JSON.parse(se);
+            if (userData && userData.uuid)
+            {
+                _iconScoutUuidCache = userData.uuid;
+                return _iconScoutUuidCache;
+            }
         }
     }
+    catch (e) { /* not JSON */ }
+
+    // 2) Scan all localStorage for a field named uuid/user_id/id holding a UUID.
+    const found = findUuidInStorage();
+    if (found)
+    {
+        Iconify.log.debug("IconScout uuid recovered from storage", found.source);
+        _iconScoutUuidCache = found.value;
+        return _iconScoutUuidCache;
+    }
+
+    // 3) Cookies fallback.
+    try
+    {
+        const cookieMatch = document.cookie.match(UUID_RE);
+        if (cookieMatch)
+        {
+            Iconify.log.debug("IconScout uuid recovered from cookies");
+            _iconScoutUuidCache = cookieMatch[0];
+            return _iconScoutUuidCache;
+        }
+    }
+    catch (e) { /* ignore */ }
+
+    Iconify.log.warn("IconScout uuid could not be located (localStorage/cookies). Are you logged in?");
     return 0;
+}
+
+// Walk every localStorage entry looking for a uuid-shaped value on a plausibly
+// user-related field. Prefers keys/fields that look like user/trait/profile data.
+function findUuidInStorage()
+{
+    let fallback = null;
+    try
+    {
+        for (let i = 0; i < localStorage.length; i++)
+        {
+            const key = localStorage.key(i);
+            const raw = localStorage.getItem(key);
+            if (!raw) { continue; }
+
+            let parsed;
+            try { parsed = JSON.parse(raw); } catch (e) { continue; }
+
+            const hit = searchUuidField(parsed);
+            if (hit)
+            {
+                const preferred = /trait|user|profile|auth|account|uuid/i.test(key + " " + hit.path);
+                const record = { value: hit.value, source: key + "." + hit.path };
+                if (preferred) { return record; }
+                if (!fallback) { fallback = record; }
+            }
+        }
+    }
+    catch (e) { /* ignore */ }
+    return fallback;
+}
+
+function searchUuidField(obj, path)
+{
+    path = path || "";
+    if (!obj || typeof obj !== "object") { return null; }
+    for (const k in obj)
+    {
+        if (!Object.prototype.hasOwnProperty.call(obj, k)) { continue; }
+        const val = obj[k];
+        if ((typeof val === "string") && (/uuid|user_?id|^id$/i).test(k) && UUID_RE.test(val))
+        {
+            return { path: path + k, value: val };
+        }
+        if (val && typeof val === "object")
+        {
+            const nested = searchUuidField(val, path + k + ".");
+            if (nested) { return nested; }
+        }
+    }
+    return null;
+}
+
+// Decide an IconScout asset's type from its product URL first (robust across DOM
+// changes), then fall back to DOM markers. Returns "svg" | "lottie" | "3d".
+function detectIconScoutType(product_url, product_id, colorEditor, lottieEditor)
+{
+    const url = String(product_url || "").toLowerCase();
+    if (/lottie|animation|animated/.test(url)) { return "lottie"; }
+    if (/3d-|three-?d|\b3d\b/.test(url))       { return "3d"; }
+    if (/icon|illustration|sticker|svg/.test(url)) { return "svg"; }
+
+    // URL was uninformative — use whatever DOM markers still exist.
+    if (lottieEditor && lottieEditor.length) { return "lottie"; }
+    if (document.querySelector("lottie-player, dotlottie-player, [id*='lottie']")) { return "lottie"; }
+    if (colorEditor && colorEditor.length) { return "svg"; }
+    return "svg";
 }
 
 // Check user logged in state
@@ -251,10 +370,16 @@ window.addEventListener("load", function (){
         const activeButton            =   $("#icon_style").find("button.active");
         const iconStyle               =   activeButton.attr("aria-label") || "solid";
         url += (iconFamily.toLowerCase() !== "classic" ? iconFamily.toLowerCase() + "-" : "") + iconStyle.toLowerCase() + "/" + name + ".svg";
+        const t = Iconify.track("FontAwesome", "SVG download", { name: name, version: versionSelector });
         fetch(url).then((res) => {
-            res.text().then((text) => {
-                downloadIcon(text, name)
-            })
+            if(!res.ok) { throw new Error("FontAwesome svg HTTP " + res.status); }
+            return res.text();
+        }).then((text) => {
+            downloadIcon(text, name)
+            t.done({ name: name });
+        }).catch((err) => {
+            t.fail(err);
+            Snackbar.show({ text : "FontAwesome SVG download failed. Check the icon version and retry." });
         });
     })
 
@@ -272,12 +397,20 @@ window.addEventListener("load", function (){
             let str                     =   idElement.attr("data-icon");
             if(str)
             {
+                    const t = Iconify.track("Icons8", "SVG download", { id: str });
+                    const icons8ResetHtml = '<div class="i8-icon i8-button__icon i8-button__icon--left i8-button__icon i8-button__icon--left" style="--icon-size: 24px;"><svg class="i8-icon-path" preserveAspectRatio="none"><path d="M11.9883 2.98935C11.7896 2.99245 11.6002 3.07432 11.4617 3.21696C11.3233 3.35959 11.2472 3.55135 11.25 3.75009V14.4395L9.53029 12.7198C9.46038 12.6478 9.37674 12.5906 9.28431 12.5515C9.19188 12.5124 9.09255 12.4923 8.9922 12.4923C8.84294 12.4923 8.69709 12.5369 8.5733 12.6203C8.44951 12.7037 8.35342 12.8221 8.29731 12.9604C8.24121 13.0987 8.22765 13.2507 8.25837 13.3967C8.28908 13.5428 8.36268 13.6764 8.46974 13.7804L11.4697 16.7804C11.6104 16.921 11.8011 16.9999 12 16.9999C12.1989 16.9999 12.3896 16.921 12.5303 16.7804L15.5303 13.7804C15.6023 13.7113 15.6597 13.6285 15.6993 13.5369C15.7389 13.4453 15.7598 13.3467 15.7608 13.2469C15.7619 13.1472 15.7429 13.0482 15.7052 12.9558C15.6675 12.8634 15.6117 12.7795 15.5412 12.7089C15.4706 12.6384 15.3867 12.5826 15.2943 12.5449C15.2019 12.5072 15.103 12.4883 15.0032 12.4893C14.9034 12.4903 14.8048 12.5112 14.7132 12.5508C14.6216 12.5904 14.5389 12.6478 14.4697 12.7198L12.75 14.4395V3.75009C12.7515 3.64971 12.7327 3.55006 12.6949 3.45705C12.6572 3.36403 12.6011 3.27955 12.5301 3.20861C12.459 3.13767 12.3745 3.0817 12.2814 3.04404C12.1884 3.00638 12.0887 2.98778 11.9883 2.98935ZM3.7383 15.4893C3.53956 15.4925 3.35017 15.5743 3.21174 15.717C3.07332 15.8596 2.99717 16.0513 3.00002 16.2501V18.2501C3.00002 19.76 4.24013 21.0001 5.75002 21.0001H18.25C19.7599 21.0001 21 19.76 21 18.2501V16.2501C21.0014 16.1507 20.9831 16.052 20.946 15.9598C20.9089 15.8676 20.8539 15.7836 20.7841 15.7129C20.7144 15.6421 20.6312 15.5859 20.5395 15.5475C20.4478 15.5092 20.3494 15.4894 20.25 15.4894C20.1506 15.4894 20.0522 15.5092 19.9605 15.5475C19.8688 15.5859 19.7857 15.6421 19.7159 15.7129C19.6461 15.7836 19.5911 15.8676 19.554 15.9598C19.517 16.052 19.4986 16.1507 19.5 16.2501V18.2501C19.5 18.9492 18.9491 19.5001 18.25 19.5001H5.75002C5.0509 19.5001 4.50002 18.9492 4.50002 18.2501V16.2501C4.50146 16.1497 4.48273 16.0501 4.44495 15.957C4.40717 15.864 4.3511 15.7796 4.28006 15.7086C4.20903 15.6377 4.12447 15.5817 4.03141 15.544C3.93835 15.5064 3.83868 15.4878 3.7383 15.4893Z" style="height: 100%;"></path></svg></div>Iconify Download SVG';
                     $.ajax({
                         url         :   `https://api-icons.icons8.com/siteApi/icons/icon?id=${str}&info=true&language=en-US&svg=true`,
                         method      :   "GET",
                         dataType    :   "JSON",
+                        xhrFields   :   { withCredentials : true },
                         beforeSend  :   function (){
                             clickedButtonElement.html(LOADING_ICON);
+                        },
+                        error       :   function (xhr, status, err){
+                            t.fail(new Error("http " + (xhr ? xhr.status : "?") + " / " + status));
+                            Snackbar.show({ text : "Icons8 download failed (" + (xhr ? xhr.status : status) + "). Check login and retry." });
+                            clickedButtonElement.html(icons8ResetHtml);
                         },
                         success     :   function (response){
                             const iconName  = response.icon.name    ?? str;
@@ -285,9 +418,11 @@ window.addEventListener("load", function (){
                             if(svg.length > 0)
                             {
                                 downloadIcon(atob(svg), iconName);
+                                t.done({ name: iconName });
                             }
                             else
                             {
+                                t.fail(new Error("no SVG in API response"));
                                 Snackbar.show({ text : "Icon / Asset is not available in SVG format."});
                             }
                             clickedButtonElement.html('<div class="i8-icon i8-button__icon i8-button__icon--left i8-button__icon i8-button__icon--left" style="--icon-size: 24px;"><svg class="i8-icon-path" preserveAspectRatio="none"><path d="M11.9883 2.98935C11.7896 2.99245 11.6002 3.07432 11.4617 3.21696C11.3233 3.35959 11.2472 3.55135 11.25 3.75009V14.4395L9.53029 12.7198C9.46038 12.6478 9.37674 12.5906 9.28431 12.5515C9.19188 12.5124 9.09255 12.4923 8.9922 12.4923C8.84294 12.4923 8.69709 12.5369 8.5733 12.6203C8.44951 12.7037 8.35342 12.8221 8.29731 12.9604C8.24121 13.0987 8.22765 13.2507 8.25837 13.3967C8.28908 13.5428 8.36268 13.6764 8.46974 13.7804L11.4697 16.7804C11.6104 16.921 11.8011 16.9999 12 16.9999C12.1989 16.9999 12.3896 16.921 12.5303 16.7804L15.5303 13.7804C15.6023 13.7113 15.6597 13.6285 15.6993 13.5369C15.7389 13.4453 15.7598 13.3467 15.7608 13.2469C15.7619 13.1472 15.7429 13.0482 15.7052 12.9558C15.6675 12.8634 15.6117 12.7795 15.5412 12.7089C15.4706 12.6384 15.3867 12.5826 15.2943 12.5449C15.2019 12.5072 15.103 12.4883 15.0032 12.4893C14.9034 12.4903 14.8048 12.5112 14.7132 12.5508C14.6216 12.5904 14.5389 12.6478 14.4697 12.7198L12.75 14.4395V3.75009C12.7515 3.64971 12.7327 3.55006 12.6949 3.45705C12.6572 3.36403 12.6011 3.27955 12.5301 3.20861C12.459 3.13767 12.3745 3.0817 12.2814 3.04404C12.1884 3.00638 12.0887 2.98778 11.9883 2.98935ZM3.7383 15.4893C3.53956 15.4925 3.35017 15.5743 3.21174 15.717C3.07332 15.8596 2.99717 16.0513 3.00002 16.2501V18.2501C3.00002 19.76 4.24013 21.0001 5.75002 21.0001H18.25C19.7599 21.0001 21 19.76 21 18.2501V16.2501C21.0014 16.1507 20.9831 16.052 20.946 15.9598C20.9089 15.8676 20.8539 15.7836 20.7841 15.7129C20.7144 15.6421 20.6312 15.5859 20.5395 15.5475C20.4478 15.5092 20.3494 15.4894 20.25 15.4894C20.1506 15.4894 20.0522 15.5092 19.9605 15.5475C19.8688 15.5859 19.7857 15.6421 19.7159 15.7129C19.6461 15.7836 19.5911 15.8676 19.554 15.9598C19.517 16.052 19.4986 16.1507 19.5 16.2501V18.2501C19.5 18.9492 18.9491 19.5001 18.25 19.5001H5.75002C5.0509 19.5001 4.50002 18.9492 4.50002 18.2501V16.2501C4.50146 16.1497 4.48273 16.0501 4.44495 15.957C4.40717 15.864 4.3511 15.7796 4.28006 15.7086C4.20903 15.6377 4.12447 15.5817 4.03141 15.544C3.93835 15.5064 3.83868 15.4878 3.7383 15.4893Z" style="height: 100%;"></path></svg></div>Iconify Download SVG')
@@ -297,6 +432,7 @@ window.addEventListener("load", function (){
         }
         catch(e)
         {
+            Iconify.log.error("Icons8 click handler threw", e);
             Snackbar.show({ text : "Something went wrong while downloading the icon, Hot reload the page." });
         }
     })
@@ -332,47 +468,88 @@ $(document).on("click", ".download-icon, .copyToClipboardIScout", function(e){
     $('meta[data-n-head="ssr"][property="product:product_link"]').each(function(){
         product_url                 =   $(this).attr("content");
     })
+    const t = Iconify.track("IconScout", "download", { product_id: product_id });
+
+    let propColorEditor     =   product_id ? $(document).find("#pdpColorEditor-"     + product_id) : $();
+    let pdpLottieEditor     =   product_id ? $(document).find("#pdp-lottie-player-"  + product_id) : $();
+    const iconType          =   detectIconScoutType(product_url, product_id, propColorEditor, pdpLottieEditor);
+    Iconify.log.debug("IconScout detection", {
+        product_id      : product_id || "(none)",
+        product_url     : product_url || "(none)",
+        uuid            : getUUIDFroIconScout() || "(none)",
+        og_product_meta : $('meta[property="og:product_id"]').length,
+        colorEditor     : propColorEditor.length,
+        lottieEditor    : pdpLottieEditor.length,
+        iconType        : iconType
+    });
+
     if(product_id)
     {
-        let propColorEditor     =   $(document).find("#pdpColorEditor-"     + product_id);
-        let pdpLottieEditor     =   $(document).find("#pdp-lottie-player-"  + product_id);
-        if(propColorEditor.length > 0)
+        if(iconType === "svg")
         {
             let token = extractTokenFromUrls(product_id);
             if(token)
             {
-                fetch(token).then( response => response.text() ).then( data => {
+                fetch(token).then( response => {
+                    if(!response.ok) { throw new Error("IconScout svg HTTP " + response.status); }
+                    return response.text();
+                }).then( data => {
                     if(data)
                     {
                         downloadIcon(data, product_id, "svg", false);
-                        clickedButtonElement.html("Download");
                     }
-                })
+                    clickedButtonElement.html("Download");
+                    t.done({ type: "svg" });
+                }).catch( err => {
+                    t.fail(err);
+                    Snackbar.show({ text : "IconScout download failed. Reload the page and retry." });
+                    clickedButtonElement.html("Download");
+                });
             }
-            clickedButtonElement.html("Download");
+            else
+            {
+                t.fail(new Error("no download token found (open the icon's editor first)"));
+                Snackbar.show({ text : "Could not find download token. Open the icon preview and retry." });
+                clickedButtonElement.html("Download");
+            }
         }
-        else if(pdpLottieEditor.length > 0)
+        else if(iconType === "lottie")
         {
 
-            if(clickedButtonElement.hasClass("copyToClipboardIScout"))
+            if(clickedButtonElement.hasClass("copyToClipboardIScout") && pdpLottieEditor.length > 0 && pdpLottieEditor[0].shadowRoot)
             {
                 const shadowRoot = pdpLottieEditor[0].shadowRoot;
                 const targetDivInShadow = $(shadowRoot).find('#animation');
                 let x = targetDivInShadow.html();
+                clickedButtonElement.html("Download");
             }
             else
             {
                 let token = extractTokenFromUrls(product_id);
-                console.log(token)
+                Iconify.log.debug("IconScout Lottie token", token);
                 if(token)
                 {
-                    fetch(token).then( response => response.json() ).then( data => {
+                    fetch(token).then( response => {
+                        if(!response.ok) { throw new Error("IconScout lottie HTTP " + response.status); }
+                        return response.json();
+                    }).then( data => {
                         if(data)
                         {
                             downloadJson(data, product_id);
-                            clickedButtonElement.html("Download");
                         }
-                    })
+                        clickedButtonElement.html("Download");
+                        t.done({ type: "lottie" });
+                    }).catch( err => {
+                        t.fail(err);
+                        Snackbar.show({ text : "IconScout Lottie download failed. Reload and retry." });
+                        clickedButtonElement.html("Download");
+                    });
+                }
+                else
+                {
+                    t.fail(new Error("no Lottie download token found"));
+                    Snackbar.show({ text : "Could not find download token. Open the icon preview and retry." });
+                    clickedButtonElement.html("Download");
                 }
             }
         }
@@ -388,22 +565,41 @@ $(document).on("click", ".download-icon, .copyToClipboardIScout", function(e){
                     const p_id          = parts[parts.length - 1];
                     if(p_id)
                     {
-                        fetch(`https://iconscout.com/api/v2/new-items/${p_id}?extra_fields=true&items=true&token=${uuid}`).then(response => response.json() ).then( data => {
-                            if(data)
-                            {
-                                downloadPNG(data.response.item.urls.original, product_id + ".png").then(() => {
-                                    clickedButtonElement.html("Download");
-                                });
-                            }
+                        fetch(`https://iconscout.com/api/v2/new-items/${p_id}?extra_fields=true&items=true&token=${uuid}`, { credentials: "include" }).then(response => {
+                            if(!response.ok) { throw new Error("IconScout 3D API HTTP " + response.status); }
+                            return response.json();
+                        }).then( data => {
+                            const original = data && data.response && data.response.item && data.response.item.urls && data.response.item.urls.original;
+                            if(!original) { throw new Error("IconScout 3D: no original image url in response"); }
+                            return downloadPNG(original, product_id + ".png");
+                        }).then(() => {
+                            clickedButtonElement.html("Download");
+                            t.done({ type: "3d-png" });
+                        }).catch( err => {
+                            t.fail(err);
+                            Snackbar.show({ text : "IconScout 3D download failed. Reload and retry." });
+                            clickedButtonElement.html("Download");
                         });
                     }
                 }
+                else
+                {
+                    t.fail(new Error("3D/PNG branch blocked — uuid=" + (uuid ? "present" : "MISSING (are you logged in to IconScout?)") + ", product_url=" + (product_url || "MISSING")));
+                    Snackbar.show({ text : uuid ? "IconScout: could not read the icon link. Reload and retry." : "Please log in to IconScout and retry." });
+                    clickedButtonElement.html("Download");
+                }
             }catch (e)
             {
+                t.fail(e);
                 Snackbar.show({ text : "Something went wrong while downloading the icon, Hot reload the page." });
                 clickedButtonElement.html("Download");
             }
         }
+    }
+    else
+    {
+        t.fail(new Error("could not read product_id from page meta"));
+        clickedButtonElement.html("Download");
     }
 });
 
@@ -457,24 +653,55 @@ $(document).on("click", ".btn-svg, .copysvg--button", function(e){
         {
             iconName    =   iconId
         }
-        fetch(`https://www.flaticon.com/editor/icon/svg/${iconId}?type=${iconType}&_auth_premium_token=${USER.premium_token}`).then( response => response.json() ).then( data => {
-            fetch(data.url).then((res) => {
-                res.text().then((text) => {
-                    if (clickedButtonElement.hasClass("btn-svg"))
-                    {
-                        downloadIcon(text, `${iconName}`)
-                        clickedButtonElement.html("SVG");
-                    }
-                    else
-                    {
-                        copyToClipBoard(text, clickedButtonElement, "Copy SVG");
-                    }
-                })
+        let premiumToken = USER.premium_token ?? getFlaticonPremiumToken();
+        const isCopy = clickedButtonElement.hasClass("copysvg--button");
+        const t = Iconify.track("Flaticon", isCopy ? "copy SVG" : "SVG download", { iconId: iconId, hasToken: !!premiumToken });
+        fetch(`https://www.flaticon.com/editor/icon/svg/${iconId}?type=${iconType}&_auth_premium_token=${premiumToken}`, { credentials: "include" })
+            .then( response => {
+                if(!response.ok) { throw new Error("Flaticon editor API HTTP " + response.status); }
+                return response.json();
+            })
+            .then( data => {
+                if(!data || !data.url) { throw new Error("Flaticon editor API returned no url (icon may be premium / token missing)"); }
+                return fetch(data.url).then((res) => {
+                    if(!res.ok) { throw new Error("Flaticon svg fetch HTTP " + res.status); }
+                    return res.text();
+                });
+            })
+            .then( text => {
+                if (clickedButtonElement.hasClass("btn-svg"))
+                {
+                    downloadIcon(text, `${iconName}`)
+                    clickedButtonElement.html("SVG");
+                }
+                else
+                {
+                    copyToClipBoard(text, clickedButtonElement, "Copy SVG");
+                }
+                t.done({ name: iconName });
+            })
+            .catch( err => {
+                t.fail(err);
+                Snackbar.show({ text : "Flaticon download failed. Make sure you're logged in and retry." });
+                clickedButtonElement.html(clickedButtonElement.hasClass("btn-svg") ? "SVG" : "Copy SVG");
             });
-        })
     }
     catch (e)
     {
+        Iconify.log.error("Flaticon click handler threw", e);
         Snackbar.show({ text : "Something went wrong while downloading the icon, Hot reload the page." });
+        clickedButtonElement.html(clickedButtonElement.hasClass("btn-svg") ? "SVG" : "Copy SVG");
     }
 })
+
+// Best-effort: recover Flaticon premium token from cookies if the page exposes it.
+function getFlaticonPremiumToken()
+{
+    try
+    {
+        const match = document.cookie.match(/(?:^|;\s*)(?:_auth_premium_token|premium_token|flaticon_premium_token)=([^;]+)/);
+        if(match && match[1]) { return decodeURIComponent(match[1]); }
+    }
+    catch(e) { /* ignore */ }
+    return "";
+}
