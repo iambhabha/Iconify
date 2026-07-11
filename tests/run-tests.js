@@ -17,7 +17,7 @@ const fs = require("fs");
 const vm = require("vm");
 const path = require("path");
 
-const SRC = path.join(__dirname, "..", "src", "scripts");
+const SRC = path.join(__dirname, "..", "scripts");
 
 /* ------------------------------------------------------------------ */
 /* tiny assertion helpers                                              */
