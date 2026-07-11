@@ -53,14 +53,14 @@ Want more sites? Create an [Issue](https://github.com/Kyutefox/Iconify/issues) a
 ### Chrome Browser
 
 > [!Important]
-> Install manually from the [GitHub Release Page](https://github.com/Kyutefox/Iconify/releases).
+> Download this repository's source (green **Code** button → **Download ZIP**, or `git clone`). `manifest.json` lives at the repository root, so no extra steps are needed to find it.
 
 ```
-1. Extract the downloaded ZIP file to your local PC.
+1. Download or clone this repository, then extract the ZIP if needed.
 2. Go to chrome://extensions/ in the address bar.
 3. Turn on Developer mode from the top-right corner.
 4. Click "Load unpacked" on the top-left of the same window.
-5. Locate the extracted folder and open it.
+5. Select the repository folder (the one containing manifest.json).
 6. Enjoy!
 ```
 
